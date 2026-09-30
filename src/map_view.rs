@@ -120,6 +120,29 @@ script_mod! {
         }
     }
 
+    // Two faces chained into one family. The shaper tries the members in order
+    // and re-shapes with the next one wherever a face has no glyph, so JetBrains
+    // Mono keeps code monospaced (and brings its Nerd Font icons) while MiSans
+    // covers the CJK punctuation and ideographs a monospace font has none of.
+    let CodeMapFonts = FontFamily{
+        latin := FontMember{
+            res: crate_resource("self:resources/JetBrainsMonoNerdFont-Regular-v1.2.ttf")
+            asc: 0.0 desc: 0.0 weight: 400.0
+        }
+        cjk := FontMember{
+            res: crate_resource("self:resources/MiSans-Medium.ttf")
+            asc: 0.0 desc: 0.0
+        }
+    }
+
+    // Point the theme's own fonts at the same two faces. Widgets (buttons, the
+    // dropdowns, the text input) ask the theme for their text style, so without
+    // this they would still request makepad's bundled fonts, find nothing beside
+    // the executable and draw no glyphs at all.
+    mod.theme.font_regular = TextStyle{font_family: CodeMapFonts line_spacing: 1.2}
+    mod.theme.font_code = TextStyle{font_family: CodeMapFonts line_spacing: 1.35}
+    mod.theme.font_bold = TextStyle{font_family: CodeMapFonts}
+
     mod.widgets.CodeMapBase = #(CodeMap::register_widget(vm))
     mod.widgets.CodeMap = set_type_default() do mod.widgets.CodeMapBase{
         width: Fill

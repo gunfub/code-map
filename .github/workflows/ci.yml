@@ -119,34 +119,77 @@ jobs:
           grep -q "files," scan-smoke.txt
 
       # Stage the layout the packaged resource loader expects:
-      #   stage/code-map, stage/scan, stage/locales/  (i18n.rs looks here)
-      #   stage/makepad_widgets/resources/*.ttf       (fonts, per FontPolicy)
-      # `dependency_path` for a widget font is "<crate>/resources/<file>", so the
-      # crate directory name is part of the path.
+      #   stage/code-map, stage/scan, stage/locales/       (i18n.rs looks here)
+      #   stage/code_map/resources/*.ttf                   (the two app fonts)
+      # A `crate_resource("self:...")` in the app resolves to
+      # "<crate name>/<path>" once packaged, and the crate name comes from the
+      # script module path with '-' replaced by '_'.
       - name: Stage the package
         shell: bash
         run: |
           set -euo pipefail
           rm -rf dist/stage
-          mkdir -p dist/stage/makepad_widgets/resources
+          mkdir -p dist/stage
           cp -R locales dist/stage/locales
-          cp "$GITHUB_WORKSPACE/../makepad/widgets/resources"/*.ttf \
-             "$GITHUB_WORKSPACE/../makepad/widgets/resources"/*.otf \
-             dist/stage/makepad_widgets/resources/
+          cp -R resources dist/stage/code_map/resources
           if [ "${RUNNER_OS}" = "Windows" ]; then
             cp target/release/code-map.exe target/release/scan.exe dist/stage/
           else
             cp target/release/code-map target/release/scan dist/stage/
           fi
           echo "staged $(du -sh dist/stage | cut -f1):"
-          ls dist/stage dist/stage/makepad_widgets/resources | head -30
+          find dist/stage -type f | sort
+
+      # Every font we ship has to arrive at a path the resource loader can build,
+      # otherwise it sits in the archive unused and the app draws no glyphs. The
+      # binary carries the list of asset paths makepad can ask for; check ours
+      # against it here so a changed layout fails the build, not the app.
+      - name: Verify the shipped fonts are ones makepad can resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=target/release/code-map
+          [ "${RUNNER_OS}" = "Windows" ] && exe=target/release/code-map.exe
+
+          # The manifest is a static in its own section: "makepad.font-assets.v1"
+          # on ELF/PE, "__mp_font_v1" on Mach-O.
+          python3 - "$exe" "${RUNNER_OS}" > manifest-assets.txt <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read()
+          marker = b"__mp_font_v1" if sys.argv[2] == "macOS" else b"makepad.font-assets.v1"
+          assets = set()
+          pos = data.find(marker)
+          while pos != -1:
+              for line in data[pos:pos + 8192].split(b"\0")[0].split(b"\n"):
+                  if line.startswith(b"asset="):
+                      assets.add(line[6:].decode("utf-8", "replace"))
+              pos = data.find(marker, pos + 1)
+          print("\n".join(sorted(assets)))
+          PY
+          echo "manifest declares $(wc -l < manifest-assets.txt) assets (makepad also loads CJK lazily):"
+          cat manifest-assets.txt
+
+          # dependency_path is "<crate name>/<path>", and the app's crate
+          # directory is code_map beside the executable.
+          find dist/stage/code_map -type f \( -name '*.ttf' -o -name '*.otf' \) \
+            | sed 's|^dist/stage/||' | sort -u > shipped-assets.txt
+          echo "shipped:"
+          cat shipped-assets.txt
+
+          unknown=$(comm -13 manifest-assets.txt shipped-assets.txt)
+          if [ -n "$unknown" ]; then
+            echo "::error::these shipped fonts are not in makepad's asset manifest, so nothing can load them:"
+            echo "$unknown"
+            exit 1
+          fi
+          echo "every shipped font resolves through the manifest"
 
       - name: Package
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          name="code-map-$(git rev-parse --short HEAD)-${{ runner.os }}"
+          name="code-map-${{ runner.os }}"
           cp -R dist/stage "dist/$name"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
 
@@ -154,7 +197,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "code-map-$(git rev-parse --short HEAD)-${{ runner.os }}"
+          $name = "code-map-${{ runner.os }}"
           Copy-Item dist/stage "dist/$name" -Recurse
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
 
