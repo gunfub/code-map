@@ -1,14 +1,18 @@
 # Shared setup for building code-map in the cloud.
 #
-# `Cargo.toml` points at `../makepad`, so a build needs two things next to each
-# other inside the workspace:
+# `Cargo.toml` points at `../makepad`, so a build needs two directories side by
+# side, one level above the repository root:
 #
-#   <workspace>/code-map   <- this repository (actions/checkout, path: code-map)
-#   <workspace>/makepad    <- makepad, pinned to the commit the README requires
+#   <workspace>          <- this repository, checked out with `path: .`
+#   ../makepad           <- makepad, pinned to the commit the README requires
+#
+# The repository must be at the workspace root, not in a subdirectory: a local
+# action (`uses: ./.github/actions/setup`) is always resolved from the workspace
+# root, so a checkout with `path: code-map` makes this action invisible to the
+# runner.
 #
 # This composite action creates the makepad checkout at the pinned commit and
-# wires up the dependency caches. The caller is responsible for checking out
-# code-map into `code-map`.
+# wires up the dependency caches.
 name: Setup makepad checkout and caches
 description: Clone makepad at the pinned commit next to code-map and configure Rust caches
 
@@ -28,7 +32,7 @@ inputs:
 
 outputs:
   lock-hash:
-    description: Hash of code-map/Cargo.lock, part of every cache key
+    description: Hash of Cargo.lock, part of every cache key
     value: ${{ steps.key.outputs.lock-hash }}
 
 runs:
@@ -39,16 +43,16 @@ runs:
     - name: Compute the cache key
       id: key
       shell: bash
-      run: echo "lock-hash=${{ hashFiles('code-map/Cargo.lock') }}" >> "$GITHUB_OUTPUT"
+      run: echo "lock-hash=${{ hashFiles('Cargo.lock') }}" >> "$GITHUB_OUTPUT"
 
-    # Cargo's build output ends up in <workspace>/makepad/target, because
-    # makepad is the workspace root for this build. Cache it per OS: debug and
-    # release artifacts share that directory, so one key per OS is enough.
-    - name: Cache makepad build output
+    # This crate declares `[workspace]`, so it is the workspace root and cargo
+    # writes to <repo>/target. Cache it per OS: debug and release artifacts
+    # share that directory, so one key per OS is enough.
+    - name: Cache build output
       if: inputs.cache-target == 'true'
       uses: actions/cache@v4
       with:
-        path: makepad/target
+        path: target
         key: code-map-target-${{ runner.os }}-${{ inputs.makepad-commit }}-${{ steps.key.outputs.lock-hash }}
         restore-keys: |
           code-map-target-${{ runner.os }}-${{ inputs.makepad-commit }}-
@@ -72,35 +76,39 @@ runs:
       env:
         MAKEPAD_REPO: ${{ inputs.makepad-repo }}
         MAKEPAD_COMMIT: ${{ inputs.makepad-commit }}
+        # Sibling of the repository, so `../makepad` in Cargo.toml resolves.
+        MAKEPAD_DIR: ${{ github.workspace }}/../makepad
       run: |
         set -euo pipefail
 
-        if [ ! -d makepad ]; then
-          git init -q makepad
-          git -C makepad remote add origin "$MAKEPAD_REPO"
+        if [ ! -d "$MAKEPAD_DIR" ]; then
+          git init -q "$MAKEPAD_DIR"
+          git -C "$MAKEPAD_DIR" remote add origin "$MAKEPAD_REPO"
         fi
 
-        if [ "$(git -C makepad rev-parse --verify --quiet HEAD || true)" != "$MAKEPAD_COMMIT" ]; then
-          git -C makepad fetch --depth 1 origin "$MAKEPAD_COMMIT"
-          git -C makepad checkout --detach -q FETCH_HEAD
+        have=$(git -C "$MAKEPAD_DIR" rev-parse --verify --quiet HEAD || true)
+        if [ "$have" != "$MAKEPAD_COMMIT" ]; then
+          git -C "$MAKEPAD_DIR" fetch --depth 1 origin "$MAKEPAD_COMMIT"
+          git -C "$MAKEPAD_DIR" checkout --detach -q FETCH_HEAD
         fi
 
-        head_sha=$(git -C makepad rev-parse HEAD)
+        head_sha=$(git -C "$MAKEPAD_DIR" rev-parse HEAD)
         if [ "$head_sha" != "$MAKEPAD_COMMIT" ]; then
           echo "::error::makepad is at $head_sha, expected $MAKEPAD_COMMIT"
           exit 1
         fi
-        echo "makepad @ $head_sha"
+        echo "makepad @ $head_sha -> $MAKEPAD_DIR"
 
-    # Guard rail: turn the "wrong directory layout" mistake into a clear error.
+    # Guard rail: turn a wrong working directory into one clear error instead of
+    # a confusing "failed to load manifest for dependency makepad-widgets".
     - name: Verify the layout Cargo.toml expects
       shell: bash
       run: |
         set -euo pipefail
-        for path in code-map/Cargo.toml makepad/Cargo.toml makepad/widgets/Cargo.toml; do
+        for path in Cargo.toml ../makepad/Cargo.toml ../makepad/widgets/Cargo.toml; do
           if [ ! -f "$path" ]; then
-            echo "::error::missing $path - is code-map checked out with path: code-map?"
+            echo "::error::missing $path - check out this repository at the workspace root (path: .)"
             exit 1
           fi
         done
-        echo "layout ok: $(pwd)"
+        echo "layout ok: $(pwd) with ../makepad present"

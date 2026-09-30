@@ -4,6 +4,12 @@
 # the pinned commit next to code-map, runs clippy and the tests, builds release
 # binaries on Linux/macOS/Windows, and packages them on tags or manual runs.
 #
+# Layout the runner ends up with, which is what `../makepad` in Cargo.toml wants
+# and what the `./.github/actions/setup` reference below needs:
+#
+#   /home/runner/work/code-map/code-map      <- this repository
+#   /home/runner/work/code-map/makepad       <- sibling, cloned by the setup action
+#
 # Download builds from the run's "Artifacts" section, or trigger a package run
 # with "Run workflow". Note: `cargo fmt --check` is deliberately NOT part of
 # this pipeline - the sources use a compact hand-kept style that rustfmt would
@@ -34,9 +40,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
+      # The repository goes to the workspace root: a local action (`uses: ./...`)
+      # is resolved from there, never from a checkout subdirectory.
       - uses: actions/checkout@v4
         with:
-          path: code-map
+          path: .
 
       - uses: ./.github/actions/setup
         with:
@@ -56,11 +64,9 @@ jobs:
             libdrm-dev libgbm-dev libasound2-dev libpulse-dev
 
       - name: cargo clippy
-        working-directory: code-map
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo test
-        working-directory: code-map
         run: cargo test --locked
 
   # Release binaries for every desktop platform the repo documents.
@@ -75,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: code-map
+          path: .
 
       - uses: ./.github/actions/setup
 
@@ -92,13 +98,11 @@ jobs:
             libdrm-dev libgbm-dev libasound2-dev libpulse-dev
 
       - name: cargo build --release
-        working-directory: code-map
         run: cargo build --locked --release
 
       # The scan binary is the headless half of the app: running it proves the
       # build actually works, with no display and no GPU.
       - name: Smoke test the headless scan binary
-        working-directory: code-map
         shell: bash
         run: |
           set -euo pipefail
@@ -126,7 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: code-map
+          path: .
 
       - uses: ./.github/actions/setup
 
@@ -142,12 +146,10 @@ jobs:
             libdrm-dev libgbm-dev libasound2-dev libpulse-dev
 
       - name: cargo build --release
-        working-directory: code-map
         run: cargo build --locked --release
 
       - name: Package
         if: runner.os != 'Windows'
-        working-directory: code-map
         shell: bash
         run: |
           set -euo pipefail
@@ -159,7 +161,6 @@ jobs:
 
       - name: Package
         if: runner.os == 'Windows'
-        working-directory: code-map
         shell: pwsh
         run: |
           $name = "code-map-${{ github.ref_name }}-${{ runner.os }}"
@@ -174,5 +175,5 @@ jobs:
           name: code-map-${{ github.ref_name }}-${{ runner.os }}
           if-no-files-found: error
           path: |
-            code-map/dist/*.tar.gz
-            code-map/dist/*.zip
+            dist/*.tar.gz
+            dist/*.zip
