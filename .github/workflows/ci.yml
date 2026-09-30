@@ -1,8 +1,8 @@
 # Cloud build for code-map.
 #
 # Nothing here needs a local Rust toolchain: the runner checks out makepad at
-# the pinned commit next to code-map, runs clippy and the tests, builds release
-# binaries on Linux/macOS/Windows, and packages them on tags or manual runs.
+# the pinned commit next to code-map, runs clippy and the tests, and builds and
+# packages release binaries on Linux, macOS and Windows.
 #
 # Layout the runner ends up with, which is what `../makepad` in Cargo.toml wants
 # and what the `./.github/actions/setup` reference below needs:
@@ -10,10 +10,9 @@
 #   /home/runner/work/code-map/code-map      <- this repository
 #   /home/runner/work/code-map/makepad       <- sibling, cloned by the setup action
 #
-# Download builds from the run's "Artifacts" section, or trigger a package run
-# with "Run workflow". Note: `cargo fmt --check` is deliberately NOT part of
-# this pipeline - the sources use a compact hand-kept style that rustfmt would
-# rewrite across every file.
+# Every run uploads downloadable packages: see "Artifacts" on the run summary.
+# Note: `cargo fmt --check` is deliberately NOT part of this pipeline - the
+# sources use a compact hand-kept style that rustfmt would rewrite in every file.
 name: CI
 
 on:
@@ -111,49 +110,15 @@ jobs:
           "./target/release/scan${ext}" . | tee scan-smoke.txt
           grep -q "files," scan-smoke.txt
 
-  # Zipped builds with locales/ next to the binary, i18n.rs finds them there.
-  # Runs on tags and on manual dispatch, so a tag push produces ready-to-use
-  # artifacts and a manual run produces the same thing without a tag.
-  package:
-    name: package (${{ matrix.os }})
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    # Own group: a later push must not cancel a run that is producing artifacts.
-    concurrency:
-      group: ci-package-${{ github.ref }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: .
-
-      - uses: ./.github/actions/setup
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config clang ca-certificates libssl-dev \
-            libx11-dev libxcursor-dev libxkbcommon-dev libxrandr-dev \
-            libxi-dev libxinerama-dev libwayland-dev wayland-protocols \
-            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglx-dev \
-            libdrm-dev libgbm-dev libasound2-dev libpulse-dev
-
-      - name: cargo build --release
-        run: cargo build --locked --release
-
+      # Package on every run, not only on tags: a push is then enough to get a
+      # runnable build. locales/ goes next to the binary, which is where
+      # i18n.rs looks for it.
       - name: Package
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          name="code-map-${{ github.ref_name }}-${{ runner.os }}"
+          name="code-map-$(git rev-parse --short HEAD)-${{ runner.os }}"
           mkdir -p "dist/$name"
           cp target/release/code-map target/release/scan "dist/$name/"
           cp -R locales "dist/$name/"
@@ -163,7 +128,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "code-map-${{ github.ref_name }}-${{ runner.os }}"
+          $name = "code-map-$(git rev-parse --short HEAD)-${{ runner.os }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
           Copy-Item target/release/code-map.exe, target/release/scan.exe "dist/$name/"
           Copy-Item locales "dist/$name/" -Recurse
@@ -172,7 +137,7 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: code-map-${{ github.ref_name }}-${{ runner.os }}
+          name: code-map-${{ runner.os }}-${{ github.sha }}
           if-no-files-found: error
           path: |
             dist/*.tar.gz

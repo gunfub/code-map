@@ -94,13 +94,13 @@ checkout, so the workflow clones Makepad at the pinned commit next to `code-map`
 which is the same layout the Setup section above describes by hand. Nothing needs
 to be installed locally: push and let the runner compile.
 
-- Every push and pull request runs clippy and the tests on Linux and builds
-  release binaries on all three platforms. The headless `scan` binary is run as a
-  smoke test, so a build that compiles but cannot start still fails the job.
-- Tags and manual runs ("Run workflow" in the Actions tab) also package
-  `code-map`, `scan` and `locales/` into `code-map-<ref>-<OS>.tar.gz` (or `.zip`)
-  and upload them as artifacts you can download from the run page. Unpack and run
-  it, there is no build step for whoever receives it.
+- Every push and pull request runs clippy and the tests on Linux, and builds,
+  packages and uploads binaries on all three platforms. The headless `scan`
+  binary is run as a smoke test, so a build that compiles but cannot start still
+  fails the job.
+- Every run's summary page has the packages: `code-map-<sha>-<OS>.tar.gz` (or
+  `.zip`) containing `code-map`, `scan` and `locales/`. Unpack and run it, there
+  is no build step for whoever receives it.
 - `cargo fmt --check` is not part of the pipeline: the sources use a compact
   style that rustfmt would rewrite in every file.
 
