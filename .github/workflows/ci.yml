@@ -96,7 +96,15 @@ jobs:
             libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglx-dev \
             libdrm-dev libgbm-dev libasound2-dev libpulse-dev
 
+      # MAKEPAD_PACKAGE_DIR makes makepad look for its resources next to the
+      # executable instead of at the absolute path of the build machine (its
+      # `option_env!` is baked in here, so this must be set while compiling
+      # makepad-platform). Without it the binary can only find the fonts at
+      # D:\a\code-map\makepad\... and every text draw silently produces no
+      # glyphs: the map draws boxes and outlines but no code.
       - name: cargo build --release
+        env:
+          MAKEPAD_PACKAGE_DIR: "."
         run: cargo build --locked --release
 
       # The scan binary is the headless half of the app: running it proves the
@@ -110,18 +118,36 @@ jobs:
           "./target/release/scan${ext}" . | tee scan-smoke.txt
           grep -q "files," scan-smoke.txt
 
-      # Package on every run, not only on tags: a push is then enough to get a
-      # runnable build. locales/ goes next to the binary, which is where
-      # i18n.rs looks for it.
+      # Stage the layout the packaged resource loader expects:
+      #   stage/code-map, stage/scan, stage/locales/  (i18n.rs looks here)
+      #   stage/makepad_widgets/resources/*.ttf       (fonts, per FontPolicy)
+      # `dependency_path` for a widget font is "<crate>/resources/<file>", so the
+      # crate directory name is part of the path.
+      - name: Stage the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist/stage
+          mkdir -p dist/stage/makepad_widgets/resources
+          cp -R locales dist/stage/locales
+          cp "$GITHUB_WORKSPACE/../makepad/widgets/resources"/*.ttf \
+             "$GITHUB_WORKSPACE/../makepad/widgets/resources"/*.otf \
+             dist/stage/makepad_widgets/resources/
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            cp target/release/code-map.exe target/release/scan.exe dist/stage/
+          else
+            cp target/release/code-map target/release/scan dist/stage/
+          fi
+          echo "staged $(du -sh dist/stage | cut -f1):"
+          ls dist/stage dist/stage/makepad_widgets/resources | head -30
+
       - name: Package
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           name="code-map-$(git rev-parse --short HEAD)-${{ runner.os }}"
-          mkdir -p "dist/$name"
-          cp target/release/code-map target/release/scan "dist/$name/"
-          cp -R locales "dist/$name/"
+          cp -R dist/stage "dist/$name"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
 
       - name: Package
@@ -129,9 +155,7 @@ jobs:
         shell: pwsh
         run: |
           $name = "code-map-$(git rev-parse --short HEAD)-${{ runner.os }}"
-          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item target/release/code-map.exe, target/release/scan.exe "dist/$name/"
-          Copy-Item locales "dist/$name/" -Recurse
+          Copy-Item dist/stage "dist/$name" -Recurse
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
 
       - name: Upload package

@@ -99,8 +99,13 @@ to be installed locally: push and let the runner compile.
   binary is run as a smoke test, so a build that compiles but cannot start still
   fails the job.
 - Every run's summary page has the packages: `code-map-<sha>-<OS>.tar.gz` (or
-  `.zip`) containing `code-map`, `scan` and `locales/`. Unpack and run it, there
-  is no build step for whoever receives it.
+  `.zip`) containing `code-map`, `scan`, `locales/` and the `makepad_widgets/`
+  fonts. Unpack and run it, there is no build step for whoever receives it.
+- Release builds set `MAKEPAD_PACKAGE_DIR=.`, which is what lets makepad find its
+  fonts beside the executable instead of at the absolute path of the build
+  machine. Without it the map still draws boxes and outlines, but every text draw
+  produces no glyphs and logs `WARNING: encountered empty font family` - so the
+  fonts have to ship with the binary, they are not optional.
 - `cargo fmt --check` is not part of the pipeline: the sources use a compact
   style that rustfmt would rewrite in every file.
 
