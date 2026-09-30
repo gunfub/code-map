@@ -165,7 +165,7 @@ jobs:
           exe=target/release/code-map
           [ "${RUNNER_OS}" = "Windows" ] && exe=target/release/code-map.exe
 
-          python3 - "$exe" "${RUNNER_OS}" > manifest-assets.txt <<'PY'
+          python3 - "$exe" "${RUNNER_OS}" <<'PY'
           import sys
           data = open(sys.argv[1], "rb").read()
           marker = b"__mp_font_v1" if sys.argv[2] == "macOS" else b"makepad.font-assets.v1"
@@ -176,10 +176,19 @@ jobs:
                   if line.startswith(b"asset="):
                       assets.add(line[6:].decode("utf-8", "replace"))
               pos = data.find(marker, pos + 1)
-          print("\n".join(sorted(assets)))
+          with open("manifest-assets.raw", "w", newline="\n") as out:
+              out.write("\n".join(sorted(assets)) + "\n")
           PY
+          # Python on Windows still translates newlines in text mode despite the
+          # explicit "\n", so strip any CR before comm compares the two files:
+          # find | sort below writes LF, and a trailing CR makes every line differ,
+          # which would report makepad's assets as missing while they sit in the
+          # package.
+          tr -d '\r' < manifest-assets.raw | sort -u > manifest-assets.txt
+          rm -f manifest-assets.raw
           find dist/stage -type f \( -name '*.ttf' -o -name '*.otf' \) \
-            | sed 's|^dist/stage/||' | sort -u > shipped-assets.txt
+            | sed 's|^dist/stage/||' | tr -d '\r' | sort -u > shipped-assets.txt
+          echo "manifest: $(wc -l < manifest-assets.txt) assets, package: $(wc -l < shipped-assets.txt) fonts"
           missing=$(comm -23 manifest-assets.txt shipped-assets.txt)
           if [ -n "$missing" ]; then
             echo "::error::makepad declares these assets but the package does not carry them:"
