@@ -1,0 +1,106 @@
+# Shared setup for building code-map in the cloud.
+#
+# `Cargo.toml` points at `../makepad`, so a build needs two things next to each
+# other inside the workspace:
+#
+#   <workspace>/code-map   <- this repository (actions/checkout, path: code-map)
+#   <workspace>/makepad    <- makepad, pinned to the commit the README requires
+#
+# This composite action creates the makepad checkout at the pinned commit and
+# wires up the dependency caches. The caller is responsible for checking out
+# code-map into `code-map`.
+name: Setup makepad checkout and caches
+description: Clone makepad at the pinned commit next to code-map and configure Rust caches
+
+inputs:
+  makepad-repo:
+    description: Repository URL for the makepad checkout
+    required: false
+    default: https://github.com/makepad/makepad.git
+  makepad-commit:
+    description: Commit of makepad to build against
+    required: false
+    default: a4ea2536a4ab223fb31e0282be923191230f44fe
+  cache-target:
+    description: Cache the makepad target directory (false for analysis-only jobs)
+    required: false
+    default: "true"
+
+outputs:
+  lock-hash:
+    description: Hash of code-map/Cargo.lock, part of every cache key
+    value: ${{ steps.key.outputs.lock-hash }}
+
+runs:
+  using: composite
+  steps:
+    # Computed in one place so the cache keys below are plain substitutions and
+    # the lockfile stays the only thing that invalidates a warm build.
+    - name: Compute the cache key
+      id: key
+      shell: bash
+      run: echo "lock-hash=${{ hashFiles('code-map/Cargo.lock') }}" >> "$GITHUB_OUTPUT"
+
+    # Cargo's build output ends up in <workspace>/makepad/target, because
+    # makepad is the workspace root for this build. Cache it per OS: debug and
+    # release artifacts share that directory, so one key per OS is enough.
+    - name: Cache makepad build output
+      if: inputs.cache-target == 'true'
+      uses: actions/cache@v4
+      with:
+        path: makepad/target
+        key: code-map-target-${{ runner.os }}-${{ inputs.makepad-commit }}-${{ steps.key.outputs.lock-hash }}
+        restore-keys: |
+          code-map-target-${{ runner.os }}-${{ inputs.makepad-commit }}-
+          code-map-target-${{ runner.os }}-
+
+    # The crates.io registry is small and saves real time on Windows and macOS.
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: code-map-cargo-${{ runner.os }}-${{ steps.key.outputs.lock-hash }}
+        restore-keys: |
+          code-map-cargo-${{ runner.os }}-
+
+    # A full clone is ~420 MB, so fetch just the pinned commit: the server can
+    # serve a commit by SHA and one commit is all this build needs.
+    - name: Check out makepad at the pinned commit
+      shell: bash
+      env:
+        MAKEPAD_REPO: ${{ inputs.makepad-repo }}
+        MAKEPAD_COMMIT: ${{ inputs.makepad-commit }}
+      run: |
+        set -euo pipefail
+
+        if [ ! -d makepad ]; then
+          git init -q makepad
+          git -C makepad remote add origin "$MAKEPAD_REPO"
+        fi
+
+        if [ "$(git -C makepad rev-parse --verify --quiet HEAD || true)" != "$MAKEPAD_COMMIT" ]; then
+          git -C makepad fetch --depth 1 origin "$MAKEPAD_COMMIT"
+          git -C makepad checkout --detach -q FETCH_HEAD
+        fi
+
+        head_sha=$(git -C makepad rev-parse HEAD)
+        if [ "$head_sha" != "$MAKEPAD_COMMIT" ]; then
+          echo "::error::makepad is at $head_sha, expected $MAKEPAD_COMMIT"
+          exit 1
+        fi
+        echo "makepad @ $head_sha"
+
+    # Guard rail: turn the "wrong directory layout" mistake into a clear error.
+    - name: Verify the layout Cargo.toml expects
+      shell: bash
+      run: |
+        set -euo pipefail
+        for path in code-map/Cargo.toml makepad/Cargo.toml makepad/widgets/Cargo.toml; do
+          if [ ! -f "$path" ]; then
+            echo "::error::missing $path - is code-map checked out with path: code-map?"
+            exit 1
+          fi
+        done
+        echo "layout ok: $(pwd)"

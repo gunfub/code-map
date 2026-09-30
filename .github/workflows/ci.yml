@@ -1,0 +1,178 @@
+# Cloud build for code-map.
+#
+# Nothing here needs a local Rust toolchain: the runner checks out makepad at
+# the pinned commit next to code-map, runs clippy and the tests, builds release
+# binaries on Linux/macOS/Windows, and packages them on tags or manual runs.
+#
+# Download builds from the run's "Artifacts" section, or trigger a package run
+# with "Run workflow". Note: `cargo fmt --check` is deliberately NOT part of
+# this pipeline - the sources use a compact hand-kept style that rustfmt would
+# rewrite across every file.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch cancels the previous run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Fast feedback first: lint and tests on one OS.
+  checks:
+    name: clippy / test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: code-map
+
+      - uses: ./.github/actions/setup
+        with:
+          # Analysis only, so there is no target directory worth caching.
+          cache-target: "false"
+
+      # The build-tree half of makepad's tools/linux_deps.sh: what a compile
+      # needs, without the audio servers, drivers and codecs a run needs.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang ca-certificates libssl-dev \
+            libx11-dev libxcursor-dev libxkbcommon-dev libxrandr-dev \
+            libxi-dev libxinerama-dev libwayland-dev wayland-protocols \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglx-dev \
+            libdrm-dev libgbm-dev libasound2-dev libpulse-dev
+
+      - name: cargo clippy
+        working-directory: code-map
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: code-map
+        run: cargo test --locked
+
+  # Release binaries for every desktop platform the repo documents.
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: code-map
+
+      - uses: ./.github/actions/setup
+
+      # makepad links X11/Wayland/EGL/xkbcommon on Linux.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang ca-certificates libssl-dev \
+            libx11-dev libxcursor-dev libxkbcommon-dev libxrandr-dev \
+            libxi-dev libxinerama-dev libwayland-dev wayland-protocols \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglx-dev \
+            libdrm-dev libgbm-dev libasound2-dev libpulse-dev
+
+      - name: cargo build --release
+        working-directory: code-map
+        run: cargo build --locked --release
+
+      # The scan binary is the headless half of the app: running it proves the
+      # build actually works, with no display and no GPU.
+      - name: Smoke test the headless scan binary
+        working-directory: code-map
+        shell: bash
+        run: |
+          set -euo pipefail
+          ext=""
+          if [ "${RUNNER_OS}" = "Windows" ]; then ext=".exe"; fi
+          "./target/release/scan${ext}" . | tee scan-smoke.txt
+          grep -q "files," scan-smoke.txt
+
+  # Zipped builds with locales/ next to the binary, i18n.rs finds them there.
+  # Runs on tags and on manual dispatch, so a tag push produces ready-to-use
+  # artifacts and a manual run produces the same thing without a tag.
+  package:
+    name: package (${{ matrix.os }})
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    # Own group: a later push must not cancel a run that is producing artifacts.
+    concurrency:
+      group: ci-package-${{ github.ref }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: code-map
+
+      - uses: ./.github/actions/setup
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang ca-certificates libssl-dev \
+            libx11-dev libxcursor-dev libxkbcommon-dev libxrandr-dev \
+            libxi-dev libxinerama-dev libwayland-dev wayland-protocols \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglx-dev \
+            libdrm-dev libgbm-dev libasound2-dev libpulse-dev
+
+      - name: cargo build --release
+        working-directory: code-map
+        run: cargo build --locked --release
+
+      - name: Package
+        if: runner.os != 'Windows'
+        working-directory: code-map
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="code-map-${{ github.ref_name }}-${{ runner.os }}"
+          mkdir -p "dist/$name"
+          cp target/release/code-map target/release/scan "dist/$name/"
+          cp -R locales "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      - name: Package
+        if: runner.os == 'Windows'
+        working-directory: code-map
+        shell: pwsh
+        run: |
+          $name = "code-map-${{ github.ref_name }}-${{ runner.os }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item target/release/code-map.exe, target/release/scan.exe "dist/$name/"
+          Copy-Item locales "dist/$name/" -Recurse
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-map-${{ github.ref_name }}-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            code-map/dist/*.tar.gz
+            code-map/dist/*.zip

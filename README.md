@@ -86,6 +86,24 @@ cargo test
 
 Also check the dropdowns, language switching and Custom detail sliders in 2D and 3D.
 
+## CI
+
+`.github/workflows/ci.yml` builds, lints and tests in the cloud, on
+ubuntu-24.04, macOS and Windows. A runner has no Rust toolchain and no Makepad
+checkout, so the workflow clones Makepad at the pinned commit next to `code-map`,
+which is the same layout the Setup section above describes by hand. Nothing needs
+to be installed locally: push and let the runner compile.
+
+- Every push and pull request runs clippy and the tests on Linux and builds
+  release binaries on all three platforms. The headless `scan` binary is run as a
+  smoke test, so a build that compiles but cannot start still fails the job.
+- Tags and manual runs ("Run workflow" in the Actions tab) also package
+  `code-map`, `scan` and `locales/` into `code-map-<ref>-<OS>.tar.gz` (or `.zip`)
+  and upload them as artifacts you can download from the run page. Unpack and run
+  it, there is no build step for whoever receives it.
+- `cargo fmt --check` is not part of the pipeline: the sources use a compact
+  style that rustfmt would rewrite in every file.
+
 ## Code tour
 
 | File | What it does |
