@@ -143,6 +143,33 @@ At runtime makepad reads these from beside the executable: the app's faces from
 crate directory names and the paths come from the resource's dependency path, so
 `cargo run --release --bin fontcheck` reports whether they resolve.
 
+## The 3D view going black
+
+On Windows the 3D view can stop updating altogether - the whole window goes black
+and only a restart brings it back. That is makepad's D3D11 backend reporting a
+lost device: `Present` returned `DXGI_ERROR_DEVICE_REMOVED` or
+`DXGI_ERROR_DEVICE_RESET`, which it logs once and then stops presenting for, since
+rebuilding the device is not implemented at this commit. Reaching that state
+after a while of orbiting and zooming points at GPU memory being exhausted by
+what the 3D view uploads per redraw.
+
+Two switches bisect it without a rebuild, either one alone:
+
+| Variable | Effect |
+| --- | --- |
+| `CODE_MAP_NO_3D_TEXT=1` | no code drawn on the tower roofs |
+| `CODE_MAP_3D_TEXT_INT=1` | round the roof text size to whole pixels |
+
+The second one is the narrower test. The roof text size follows the tower's
+distance and so changes continuously while the camera moves, and glyphs are
+cached per size, so the narrow test is whether rounding the size stops the atlas
+from churning.
+
+Every 120 redraws the 3D view logs how many code panels, draw lists and cached
+files it is holding. A count that keeps climbing while that log's other numbers
+stay flat means something accumulates per redraw; flat numbers with a black
+screen means the pressure comes from elsewhere.
+
 ## Code tour
 
 | File | What it does |

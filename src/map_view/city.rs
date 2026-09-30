@@ -16,6 +16,29 @@ use crate::orbit::{ray_box, Frame};
 const CITY_SIZE: f32 = 10.0;
 /// Thickness of one folder plate.
 const PLATE: f32 = 0.035;
+/// Two switches for bisecting the 3D view going black after a while, which is a
+/// resource that accumulates with use. Neither changes what is drawn by default.
+///
+///   CODE_MAP_NO_3D_TEXT=1     no code on the tower roofs at all
+///   CODE_MAP_3D_TEXT_INT=1    round the panel font size to whole pixels
+///
+/// The second one matters because the font size follows the tower's distance and
+/// so changes continuously as the camera moves, and a glyph cache keyed on size
+/// has to rasterize every distinct size it is shown.
+struct CityFlags {
+    draw_code: bool,
+    integer_text: bool,
+}
+
+impl CityFlags {
+    fn from_env() -> Self {
+        let yes = |name: &str| std::env::var_os(name).is_some_and(|v| v != "0" && !v.is_empty());
+        CityFlags {
+            draw_code: !yes("CODE_MAP_NO_3D_TEXT"),
+            integer_text: yes("CODE_MAP_3D_TEXT_INT"),
+        }
+    }
+}
 
 /// A file tower whose top is close enough to show code on it.
 struct CodePanel {
@@ -212,7 +235,9 @@ impl CodeMap {
 
         panels.sort_by(|a, b| b.line_px.total_cmp(&a.line_px));
         panels.truncate(self.detail_budget(48, 96, 160));
-        self.draw_code_panels(cx, panels);
+        if CityFlags::from_env().draw_code {
+            self.draw_code_panels(cx, panels);
+        }
     }
 
     /// Draw code on top of towers. Each panel is ordinary 2D drawing (the same
@@ -220,7 +245,18 @@ impl CodeMap {
     /// view transform matrix lays that 2D plane onto the roof in 3D.
     /// Makepad's XR mode puts whole UI panels into 3D space the same way.
     fn draw_code_panels(&mut self, cx: &mut Cx3d, panels: Vec<CodePanel>) {
+        let flags = CityFlags::from_env();
         let k = self.scale_3d() as f64;
+        self.city_redraws += 1;
+        if self.city_redraws.is_multiple_of(120) {
+            crate::makepad_widgets::log!(
+                "city: {} redraws, {} code panels, {} draw lists, text cache {} files",
+                self.city_redraws,
+                panels.len(),
+                self.code_lists.len(),
+                self.text_cache.len(),
+            );
+        }
         let mut text_budget = self.detail_budget(12_000, 24_000, 48_000);
         let mut strip_budget = self.detail_budget(250_000, 500_000, 750_000);
         for (slot, panel) in panels.iter().enumerate() {
@@ -234,7 +270,10 @@ impl CodeMap {
             let node = &self.tree.nodes[panel.index];
             // Choose local units so one line is about as many units as it has
             // screen pixels: text is laid out at a size that stays sharp.
-            let local_line = (panel.line_px as f64).clamp(6.0, 48.0);
+            let mut local_line = (panel.line_px as f64).clamp(6.0, 48.0);
+            if flags.integer_text {
+                local_line = local_line.round();
+            }
             let s = node.line_h / local_line; // layout units per local unit
             let r = node.rect;
             let size = dvec2(r.w / s, r.h / s);

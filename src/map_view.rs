@@ -357,6 +357,12 @@ pub struct CodeMap {
     message: String,
     #[rust]
     labels: Vec<Label>,
+    /// How many redraws the 3D view has done, reported periodically in the log.
+    /// The 3D view turning black after a while is a resource that grows with use,
+    /// and a count that keeps rising while the drawn content does not is the
+    /// cheapest way to see the difference from outside.
+    #[rust]
+    city_redraws: u64,
 }
 
 impl CodeMap {
