@@ -129,7 +129,9 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf dist/stage
-          mkdir -p dist/stage
+          # cp -R creates the destination directory itself but not the parents of
+          # it, so code_map/ has to exist before resources/ goes into it.
+          mkdir -p dist/stage/code_map
           cp -R locales dist/stage/locales
           cp -R resources dist/stage/code_map/resources
           if [ "${RUNNER_OS}" = "Windows" ]; then
