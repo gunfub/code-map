@@ -4,6 +4,9 @@
 //!   cargo run --release --bin scan -- /path/to/project [ignored/path ...]
 //!
 //! Extra paths are read the way a click on an ignored box reads them.
+//!
+//! `--check-fonts` instead checks that the fonts the app draws with sit where it
+//! will look for them, which nothing in a build can prove on its own.
 
 // Reuse the app's scanner and tree code by pointing at the same files.
 #[allow(dead_code)]
@@ -18,7 +21,50 @@ mod scan;
 
 use std::path::PathBuf;
 
+/// Keep in step with the `crate_resource("self:resources/...")` paths in
+/// `src/map_view.rs`: makepad turns `self:` into "<crate name>/<path>" once
+/// packaged, and `code-map` becomes `code_map` there.
+const FONT_ASSETS: &[&str] = &[
+    "code_map/resources/JetBrainsMonoNerdFont-Regular-v1.2.ttf",
+    "code_map/resources/MiSans-Medium.ttf",
+];
+
+/// Returns the first directory that has all of `FONT_ASSETS`.
+///
+/// The order mirrors what makepad does with a relative `package_root`: try the
+/// current directory first, then the directory of the executable.
+fn locate_fonts() -> Option<PathBuf> {
+    let mut roots = vec![PathBuf::from(".")];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+        }
+    }
+    roots.into_iter().find(|root| FONT_ASSETS.iter().all(|asset| root.join(asset).is_file()))
+}
+
+fn check_fonts() {
+    if let Some(root) = locate_fonts() {
+        println!("fonts resolved from {}", root.canonicalize().unwrap_or(root).display());
+        for asset in FONT_ASSETS {
+            println!("  ok  {asset}");
+        }
+        return;
+    }
+    eprintln!("fonts were not found next to the executable. Looked for:");
+    for asset in FONT_ASSETS {
+        eprintln!("  {asset}");
+    }
+    eprintln!("The app would draw boxes and outlines but no text. Ship the resources/");
+    eprintln!("directory as code_map/resources/ alongside the binary.");
+    std::process::exit(1);
+}
+
 fn main() {
+    if std::env::args().any(|arg| arg == "--check-fonts") {
+        check_fonts();
+        return;
+    }
     let path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let root = path.canonicalize().unwrap_or(path);
     let started = std::time::Instant::now();

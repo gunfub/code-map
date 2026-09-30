@@ -1242,4 +1242,105 @@ mod tests {
             }
         );
     }
+
+    /// Minimal TrueType `cmap` reader: enough to ask "does this face have that
+    /// character", which is the question the font chain depends on.
+    fn covers(path: &std::path::Path, chars: &[char]) -> Vec<char> {
+        let data = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let u16_at = |o: usize| u16::from_be_bytes([data[o], data[o + 1]]) as usize;
+        let u32_at =
+            |o: usize| u32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
+
+        let tables = u16_at(4);
+        let mut cmap = None;
+        for i in 0..tables {
+            let rec = 12 + i * 16;
+            if &data[rec..rec + 4] == b"cmap" {
+                cmap = Some(u32_at(rec + 8));
+            }
+        }
+        let cmap = cmap.expect("no cmap table");
+        let mut best = None;
+        for i in 0..u16_at(cmap + 2) {
+            let rec = cmap + 4 + i * 8;
+            let sub = cmap + u32_at(rec + 4);
+            match u16_at(sub) {
+                4 => best = best.or(Some(sub)),
+                12 => best = Some(sub),
+                _ => {}
+            }
+        }
+        let sub = best.expect("no usable cmap subtable");
+        // Both formats are walked down to a glyph id, because a code point can
+        // sit inside a segment's range and still be unmapped there (id 0).
+        let has = |cp: u32| -> bool {
+            if u16_at(sub) == 4 {
+                if cp > 0xffff {
+                    return false;
+                }
+                let seg = u16_at(sub + 6) / 2;
+                let ends = sub + 14;
+                let starts = ends + seg * 2 + 2;
+                let deltas = starts + seg * 2;
+                let ranges = deltas + seg * 2;
+                for i in 0..seg {
+                    if !(u16_at(starts + i * 2) as u32 <= cp && cp <= u16_at(ends + i * 2) as u32) {
+                        continue;
+                    }
+                    let start = u16_at(starts + i * 2);
+                    let delta = u16_at(deltas + i * 2) as u32;
+                    let range = u16_at(ranges + i * 2);
+                    let glyph = if range == 0 {
+                        (cp + delta) & 0xffff
+                    } else {
+                        let at = ranges + i * 2 + range + (cp - start as u32) as usize * 2;
+                        if at + 1 >= data.len() {
+                            return false;
+                        }
+                        let g = u16_at(at) as u32;
+                        if g == 0 { 0 } else { (g + delta) & 0xffff }
+                    };
+                    return glyph != 0;
+                }
+                false
+            } else {
+                for g in 0..u32_at(sub + 12) {
+                    let rec = sub + 16 + g * 12;
+                    if u32_at(rec) as u32 <= cp && cp <= u32_at(rec + 4) as u32 {
+                        return u32_at(rec + 8) != 0;
+                    }
+                }
+                false
+            }
+        };
+        chars.iter().copied().filter(|c| !has(*c as u32)).collect()
+    }
+
+    fn font(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(name)
+    }
+
+    /// The code view is monospaced but reads CJK source, so the family has to
+    /// span two faces. A face that stops covering either half turns characters
+    /// into nothing at all, which is silent at runtime.
+    #[test]
+    fn shipped_fonts_cover_the_code_and_the_characters_around_it() {
+        let mono = font("JetBrainsMonoNerdFont-Regular-v1.2.ttf");
+        let cjk = font("MiSans-Medium.ttf");
+
+        let missing = covers(&mono, &['a', 'Z', '0', '{', '}', '=', '/', '*']);
+        assert!(missing.is_empty(), "monospace face is missing {missing:?}");
+
+        // What the shaper reported as misses before the second face existed.
+        let punctuation = ['：', '（', '）', '，', '；', '？', '！', '～', '／', '①'];
+        let missing = covers(&cjk, &punctuation);
+        assert!(missing.is_empty(), "CJK face is missing {missing:?}");
+
+        let missing = covers(&cjk, &['中', '文', '代', '码', '注', '释']);
+        assert!(missing.is_empty(), "CJK face is missing {missing:?}");
+
+        // If this ever holds, the chain is pointless and one face would do.
+        let mono_has_punctuation = covers(&mono, &punctuation).len() < punctuation.len();
+        assert!(!mono_has_punctuation, "monospace face now covers CJK; the chain can be simplified");
+    }
 }
