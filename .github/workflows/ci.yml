@@ -201,6 +201,8 @@ jobs:
       # will look. Nothing in a build can prove that on its own, so build the
       # makepad-free checker, put it in the staged layout and run it from there.
       - name: Check the staged package can find the app's fonts
+        # Windows defaults to pwsh, and this step is bash.
+        shell: bash
         run: |
           cargo build --locked --release --bin fontcheck
           if [ "${RUNNER_OS}" = "Windows" ]; then
