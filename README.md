@@ -99,20 +99,23 @@ to be installed locally: push and let the runner compile.
   binary is run as a smoke test, so a build that compiles but cannot start still
   fails the job.
 - Every run's summary page has the packages: `code-map-<OS>.tar.gz` (or `.zip`)
-  containing `code-map`, `scan`, `locales/` and `code_map/resources/` with the
-  fonts. Unpack and run it, there is no build step for whoever receives it.
+  containing `code-map`, `scan`, `fontcheck`, `locales/` and both font
+  directories. Unpack and run it, there is no build step for whoever receives it.
 - Release builds set `MAKEPAD_PACKAGE_DIR=.`, which is what lets makepad find its
   resources beside the executable instead of at the absolute path of the build
   machine. Without it the map still draws boxes and outlines, but every text draw
   produces no glyphs and logs `WARNING: encountered empty font family` - so the
   fonts have to ship with the binary, they are not optional.
+- Two checks guard that failure, because it is silent and survives a green build:
+  the packaged asset list is compared against the manifest the binary carries,
+  and `fontcheck` resolves the app's own faces from inside the staged layout.
 - `cargo fmt --check` is not part of the pipeline: the sources use a compact
   style that rustfmt would rewrite in every file.
 
 ## Fonts
 
 `resources/` holds the two faces the app draws with, and `src/map_view.rs` chains
-them into one family and points the theme's fonts at it:
+them into one family:
 
 | Face | Covers |
 | --- | --- |
@@ -121,13 +124,24 @@ them into one family and points the theme's fonts at it:
 
 The chain matters: the shaper tries the members in order and re-shapes with the
 next one wherever a face has no glyph, so `：`, `（）` and Chinese identifiers
-render even though JetBrains Mono lacks them. Overriding `mod.theme.font_code`
-and `mod.theme.font_regular` is equally deliberate - buttons, the dropdowns and
-the search field take their text style from the theme, so leaving the theme alone
-would send them looking for makepad's bundled fonts, which are not shipped here.
+render even though JetBrains Mono lacks them. Every theme font slot
+(`font_regular`, `font_bold`, `font_italic`, `font_bold_italic`, `font_label`,
+`font_code`, `font_icons`) is re-pointed at that family, because widgets take
+their text style from the theme - `theme.font_regular` alone is read in 46 places
+inside makepad's widgets, and `label.rs` also asks for `font_italic` and
+`font_icons`.
 
-At runtime the fonts are read from `code_map/resources/` next to the executable
-(the crate name, `code_map`, is part of the path).
+makepad's own faces ship too, under `makepad_widgets/resources/`. They are a
+safety net rather than a requirement: a theme slot that somehow still resolves to
+one of them comes up empty - and therefore draws nothing - when the file is
+missing, which is the failure this app shipped once already. The CJK pair among
+them is most of that weight; drop them only if you also accept that such a slot
+would lose its CJK coverage.
+
+At runtime makepad reads these from beside the executable: the app's faces from
+`code_map/resources/` and its own from `makepad_widgets/resources/`. Both the
+crate directory names and the paths come from the resource's dependency path, so
+`cargo run --release --bin fontcheck` reports whether they resolve.
 
 ## Code tour
 

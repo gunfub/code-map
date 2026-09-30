@@ -120,38 +120,87 @@ jobs:
 
       # Stage the layout the packaged resource loader expects:
       #   stage/code-map, stage/scan, stage/locales/       (i18n.rs looks here)
-      #   stage/code_map/resources/*.ttf                   (the two app fonts)
+      #   stage/code_map/resources/                        (our two faces)
+      #   stage/makepad_widgets/resources/                 (makepad's own faces)
       # A `crate_resource("self:...")` in the app resolves to
       # "<crate name>/<path>" once packaged, and the crate name comes from the
       # script module path with '-' replaced by '_'.
+      #
+      # makepad's faces ride along even though the theme is re-pointed at ours:
+      # any widget that still asks the theme for a face we do not override (the
+      # italic and icon slots) would otherwise resolve to an empty family and
+      # draw no glyphs at all, which is far worse than carrying the files.
       - name: Stage the package
         shell: bash
         run: |
           set -euo pipefail
           rm -rf dist/stage
           # cp -R creates the destination directory itself but not the parents of
-          # it, so code_map/ has to exist before resources/ goes into it.
-          mkdir -p dist/stage/code_map
+          # it, so both crate directories have to exist before anything goes in.
+          mkdir -p dist/stage/code_map dist/stage/makepad_widgets
           cp -R locales dist/stage/locales
           cp -R resources dist/stage/code_map/resources
+          cp -R "$GITHUB_WORKSPACE/../makepad/widgets/resources" dist/stage/makepad_widgets/resources
+          rm -f dist/stage/makepad_widgets/resources/*.txt
           if [ "${RUNNER_OS}" = "Windows" ]; then
             cp target/release/code-map.exe target/release/scan.exe dist/stage/
           else
             cp target/release/code-map target/release/scan dist/stage/
           fi
           echo "staged $(du -sh dist/stage | cut -f1):"
-          find dist/stage -type f | sort
+          find dist/stage -maxdepth 2 -type d | sort
 
-      # The fonts are read at runtime from paths beside the executable, so
-      # nothing in the build can prove they got there. Ask the packaged binary
-      # itself, from inside the staged layout, before zipping it up.
-      - name: Check the staged package can find its fonts
+      # Two checks that catch the failure this app already shipped once: text
+      # silently missing because a font could not be loaded.
+      #
+      # First, every asset makepad's own manifest declares has to be in the
+      # package. The manifest is a static in its own section ("makepad.font-assets.v1"
+      # on ELF/PE, "__mp_font_v1" on Mach-O) and is the list of paths makepad can
+      # ask for, so anything missing from the package is a family that can come up
+      # empty.
+      - name: Check makepad's own font assets are packaged
         shell: bash
         run: |
           set -euo pipefail
-          ext=""
-          if [ "${RUNNER_OS}" = "Windows" ]; then ext=".exe"; fi
-          ( cd dist/stage && "./scan${ext}" --check-fonts )
+          exe=target/release/code-map
+          [ "${RUNNER_OS}" = "Windows" ] && exe=target/release/code-map.exe
+
+          python3 - "$exe" "${RUNNER_OS}" > manifest-assets.txt <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read()
+          marker = b"__mp_font_v1" if sys.argv[2] == "macOS" else b"makepad.font-assets.v1"
+          assets = set()
+          pos = data.find(marker)
+          while pos != -1:
+              for line in data[pos:pos + 8192].split(b"\0")[0].split(b"\n"):
+                  if line.startswith(b"asset="):
+                      assets.add(line[6:].decode("utf-8", "replace"))
+              pos = data.find(marker, pos + 1)
+          print("\n".join(sorted(assets)))
+          PY
+          find dist/stage -type f \( -name '*.ttf' -o -name '*.otf' \) \
+            | sed 's|^dist/stage/||' | sort -u > shipped-assets.txt
+          missing=$(comm -23 manifest-assets.txt shipped-assets.txt)
+          if [ -n "$missing" ]; then
+            echo "::error::makepad declares these assets but the package does not carry them:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "all $(wc -l < manifest-assets.txt) of makepad's declared font assets are packaged"
+
+      # Second, the faces the app itself draws with have to sit where the loader
+      # will look. Nothing in a build can prove that on its own, so build the
+      # makepad-free checker, put it in the staged layout and run it from there.
+      - name: Check the staged package can find the app's fonts
+        run: |
+          cargo build --locked --release --bin fontcheck
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            cp target/release/fontcheck.exe dist/stage/
+            cd dist/stage && ./fontcheck.exe
+          else
+            cp target/release/fontcheck dist/stage/
+            cd dist/stage && ./fontcheck
+          fi
 
       - name: Package
         if: runner.os != 'Windows'

@@ -135,13 +135,18 @@ script_mod! {
         }
     }
 
-    // Point the theme's own fonts at the same two faces. Widgets (buttons, the
-    // dropdowns, the text input) ask the theme for their text style, so without
-    // this they would still request makepad's bundled fonts, find nothing beside
-    // the executable and draw no glyphs at all.
+    // Point every font the theme hands out at those two faces. Widgets take their
+    // text style from the theme - font_regular alone is read in 46 places, and
+    // label.rs also asks for font_italic and font_icons - so a slot left pointing
+    // at makepad's bundle resolves to an empty family when those files are not
+    // beside the executable, and an empty family draws no glyphs at all.
     mod.theme.font_regular = TextStyle{font_family: CodeMapFonts line_spacing: 1.2}
-    mod.theme.font_code = TextStyle{font_family: CodeMapFonts line_spacing: 1.35}
+    mod.theme.font_label = TextStyle{font_family: CodeMapFonts line_spacing: 1.2}
     mod.theme.font_bold = TextStyle{font_family: CodeMapFonts}
+    mod.theme.font_italic = TextStyle{font_family: CodeMapFonts}
+    mod.theme.font_bold_italic = TextStyle{font_family: CodeMapFonts}
+    mod.theme.font_code = TextStyle{font_family: CodeMapFonts line_spacing: 1.35}
+    mod.theme.font_icons = TextStyle{font_family: CodeMapFonts}
 
     mod.widgets.CodeMapBase = #(CodeMap::register_widget(vm))
     mod.widgets.CodeMap = set_type_default() do mod.widgets.CodeMapBase{
